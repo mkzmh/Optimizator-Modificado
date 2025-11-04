@@ -1,16 +1,15 @@
 import streamlit as st
+import time 
 import pandas as pd
 from datetime import date
-import os
-import time 
+import json # Necesario para manejar las credenciales JSON
 import gspread # Librería principal para Google Sheets
-import json
 
 # Importa la lógica y constantes del módulo vecino
 from routing_logic3 import COORDENADAS_LOTES, solve_route_optimization, VEHICLES, COORDENADAS_ORIGEN 
 
 # =============================================================================
-# CONFIGURACIÓN INICIAL Y SECRETS (Para Despliegue en la Nube)
+# 1. CONFIGURACIÓN INICIAL, ESTILO Y CONEXIÓN
 # =============================================================================
 
 st.set_page_config(page_title="Optimizador Bimodal de Rutas", layout="wide")
@@ -22,69 +21,63 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# 🚨 CLAVES PARA GOOGLE SHEETS 🚨
-# Para que funcione en Streamlit Cloud, debes poner estas credenciales en secrets.toml 
-# Usaremos un valor placeholder, pero recuerda que necesitas el JSON real en Secrets.
-# Por simplicidad, asumimos que has subido tus credenciales y la URL a Streamlit Secrets.
-
-SHEET_URL = "https://docs.google.com/spreadsheets/d/1LPXWnSGiUWbwocukRH4A8Tb70R3Yt8A6NGAxvyJwe9k/edit?usp=sharing" # Reemplazar si no usas secrets
-SHEET_WORKSHEET = "Hoja1" # O el nombre de la pestaña que usaste
+# 🚨 AJUSTAR: Reemplaza con la URL completa de tu Hoja de Cálculo
+GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1LPXWnSGiUWbwocukRH4A8Tb70R3Yt8A6NGAxvyJwe9k/edit?usp=sharing" 
+SHEET_WORKSHEET = "Hoja1" # Ajustar si la pestaña tiene otro nombre
 
 # -------------------------------------------------------------------------
-# ✅ NUEVAS FUNCIONES: CONEXIÓN Y ALMACENAMIENTO PERMANENTE
+# FUNCIONES DE CONEXIÓN Y PERSISTENCIA (Sheets)
 # -------------------------------------------------------------------------
 
 @st.cache_resource(ttl=3600)
 def get_gspread_client():
-    """Establece la conexión con Google Sheets usando la clave de servicio."""
+    """Establece la conexión con Google Sheets usando la clave de servicio (secrets)."""
     try:
-        # Intenta usar la conexión con credenciales seguras (ideal para despliegue)
-        # Si usas Streamlit Cloud, el código lo lee de st.secrets
+        # Streamlit Cloud lee las credenciales del archivo secrets.toml
+        credentials_json = st.secrets["gdrive_creds"] 
+        credentials_dict = json.loads(credentials_json) 
         
-        # ⚠️ Aquí deberías usar el método de conexión de tu plataforma
-        # Dado que no podemos simular las credenciales aquí, devolvemos un cliente dummy
-        # y dependemos del usuario para configurar el archivo JSON de credenciales.
-        
-        # SIMULACIÓN (ESTO DEBE SER REEMPLAZADO POR CÓDIGO REAL DE GSPREAD EN PRODUCCIÓN)
-        st.info("⚠️ Conexión de historial desactivada en local. Requiere credenciales de servicio.")
-        return None 
-
+        gc = gspread.service_account_from_dict(credentials_dict)
+        return gc
     except Exception as e:
-        st.error(f"❌ Error al conectar GSheets. {e}")
+        # Muestra una advertencia si no se puede conectar (ej., si se ejecuta localmente sin secrets)
+        st.warning(f"⚠️ Historial desactivado. Error de credenciales: {e}")
         return None
 
-# Conexión al cliente (solo ocurrirá una vez)
-gclient = get_gspread_client()
-
 def load_historial_from_gsheets(client):
-    """Carga el historial desde Google Sheets."""
+    """Carga el historial desde Google Sheets o devuelve una lista vacía."""
     if not client: return []
     try:
-        sh = client.open_by_url(SHEET_URL)
+        sh = client.open_by_url(GOOGLE_SHEET_URL)
         worksheet = sh.worksheet(SHEET_WORKSHEET)
         
-        # Carga los datos como un DataFrame, usando los encabezados de la fila 1
+        # Carga todos los registros (usando los encabezados de la Fila 1)
         df = pd.DataFrame(worksheet.get_all_records())
+        
+        if df.empty:
+            return []
+            
+        # Devolvemos la lista de diccionarios que la sesión usa
         return df.to_dict('records')
 
     except Exception as e:
-        st.warning(f"Advertencia: No se pudo cargar el historial de la nube. Error: {e}")
+        st.error(f"❌ Error al cargar historial de la nube. Verifique la URL/nombre de pestaña.")
         return []
 
 def save_new_route_to_gsheets(client, new_route_data):
     """Guarda un nuevo registro de ruta en la Hoja de Cálculo."""
     if not client: return
     try:
-        sh = client.open_by_url(SHEET_URL)
+        sh = client.open_by_url(GOOGLE_SHEET_URL)
         worksheet = sh.worksheet(SHEET_WORKSHEET)
         
-        # 🚨 Asegúrate de que el orden de los valores coincida con tus encabezados de Sheets
+        # Asegúrate de que el orden de los valores coincida con tus encabezados de Sheets
         # Encabezados: Fecha, LotesIngresados, Lotes_CamionA, Lotes_CamionB, Km_CamionA, Km_CamionB
         row_values = [
             new_route_data["fecha"],
             new_route_data["lotes_ingresados"],
-            str(", ".join(new_route_data["lotes_a"])),  # Convierte lista a string legible
-            str(", ".join(new_route_data["lotes_b"])),  # Convierte lista a string legible
+            str(", ".join(new_route_data["lotes_a"])), 
+            str(", ".join(new_route_data["lotes_b"])), 
             new_route_data["km_a"],
             new_route_data["km_b"],
         ]
@@ -94,7 +87,11 @@ def save_new_route_to_gsheets(client, new_route_data):
     except Exception as e:
         st.error(f"❌ Error al guardar datos en Google Sheets: {e}")
 
-# Inicialización de la sesión para cargar el historial
+# -------------------------------------------------------------------------
+# INICIALIZACIÓN DE LA SESIÓN
+# -------------------------------------------------------------------------
+gclient = get_gspread_client()
+
 if 'historial_cargado' not in st.session_state:
     st.session_state.historial_rutas = load_historial_from_gsheets(gclient)
     st.session_state.historial_cargado = True 
@@ -103,7 +100,7 @@ if 'results' not in st.session_state:
     st.session_state.results = None 
 
 # =============================================================================
-# ESTRUCTURA DEL MENÚ LATERAL (Se mantiene igual)
+# 2. ESTRUCTURA DEL MENÚ LATERAL Y NAVEGACIÓN
 # =============================================================================
 
 st.sidebar.title("Menú Principal")
@@ -115,7 +112,7 @@ st.sidebar.divider()
 st.sidebar.info(f"Rutas Guardadas: {len(st.session_state.historial_rutas)}")
 
 # =============================================================================
-# 1. PÁGINA: CALCULAR NUEVA RUTA (PÁGINA PRINCIPAL)
+# 1. PÁGINA: CALCULAR NUEVA RUTA (PÁGINA PRINCIPAL Y REPORTE UNIFICADO)
 # =============================================================================
 
 if page == "Calcular Nueva Ruta":
@@ -130,35 +127,42 @@ if page == "Calcular Nueva Ruta":
     )
     
     col_map, col_details = st.columns([2, 1])
-    # ... (Lógica de validación, mapa, etc., se mantiene igual) ...
-
-    # [CÓDIGO DE VALIDACIÓN Y MAPA ACORTADO POR ESPACIO]
 
     all_stops_to_visit = [l.strip().upper() for l in lotes_input.split(',') if l.strip()]
     num_lotes = len(all_stops_to_visit)
+
+    # Lógica de pre-visualización y mapa...
     map_data_list = []
     map_data_list.append({'name': 'INGENIO (Origen)', 'lat': COORDENADAS_ORIGEN[1], 'lon': COORDENADAS_ORIGEN[0]})
+    
     valid_stops_count = 0
     invalid_stops = [l for l in all_stops_to_visit if l not in COORDENADAS_LOTES]
+
     for lote in all_stops_to_visit:
         if lote in COORDENADAS_LOTES:
             lon, lat = COORDENADAS_LOTES[lote]
             map_data_list.append({'name': lote, 'lat': lat, 'lon': lon})
             valid_stops_count += 1
+    
     map_data = pd.DataFrame(map_data_list)
+    
     with col_map:
         if valid_stops_count > 0:
             st.subheader(f"Mapa de {valid_stops_count} Destinos")
             st.map(map_data, latitude='lat', longitude='lon', color='#0044FF', size=10, zoom=10)
         else:
             st.info("Ingrese lotes válidos para ver la previsualización del mapa.")
+
     with col_details:
         st.subheader("Estado de la Selección")
         st.metric("Total Lotes Ingresados", num_lotes)
+        
         if invalid_stops:
             st.error(f"❌ {len(invalid_stops)} Lotes Inválidos: {', '.join(invalid_stops)}.")
+        
         MIN_LOTES = 3
         MAX_LOTES = 7
+        
         if valid_stops_count < MIN_LOTES or valid_stops_count > MAX_LOTES:
             st.warning(f"⚠️ Debe ingresar entre {MIN_LOTES} y {MAX_LOTES} lotes válidos. Ingresó {valid_stops_count}.")
             calculate_disabled = True
@@ -167,23 +171,20 @@ if page == "Calcular Nueva Ruta":
         else:
             calculate_disabled = True
 
+    # -------------------------------------------------------------------------
+    # 🛑 BOTÓN DE CÁLCULO Y LÓGICA
+    # -------------------------------------------------------------------------
     st.divider()
-    calculate_button = st.button("🚀 Calcular Rutas Óptimas", type="primary", disabled=calculate_disabled)
-
     
-    # -------------------------------------------------------------------------
-    # 🛑 LÓGICA DE CÁLCULO Y ESCRITURA EN SHEETS
-    # -------------------------------------------------------------------------
-    if calculate_button:
-        if 'results' not in st.session_state:
-            st.session_state.results = None
+    if st.button("🚀 Calcular Rutas Óptimas", key="calc_btn_main", type="primary", disabled=calculate_disabled):
+        
+        st.session_state.results = None 
 
-        with st.spinner('Realizando cálculo óptimo y agrupando rutas'):
+        with st.spinner('Realizando cálculo óptimo y agrupando rutas (¡75s de espera incluidos!)...'):
             try:
                 results = solve_route_optimization(all_stops_to_visit) 
                 
                 if "error" in results:
-                    st.session_state.results = None
                     st.error(f"❌ Error en la API de Ruteo: {results['error']}")
                 else:
                     new_route = {
@@ -200,11 +201,11 @@ if page == "Calcular Nueva Ruta":
                     
                     # ACTUALIZA EL ESTADO DE LA SESIÓN
                     st.session_state.historial_rutas.append(new_route)
-                    
                     st.session_state.results = results
                     st.success("✅ Cálculo finalizado y rutas optimizadas.")
                     
             except Exception as e:
+                st.session_state.results = None
                 st.error(f"❌ Ocurrió un error inesperado durante el ruteo: {e}")
                 
     # -------------------------------------------------------------------------
@@ -247,7 +248,7 @@ if page == "Calcular Nueva Ruta":
 
 
 # =============================================================================
-# 2. PÁGINA: HISTORIAL (MODIFICADA PARA MOSTRAR TIEMPO)
+# 2. PÁGINA: HISTORIAL
 # =============================================================================
 
 elif page == "Historial":
@@ -257,7 +258,7 @@ elif page == "Historial":
         df_historial = pd.DataFrame(st.session_state.historial_rutas)
         st.subheader(f"Total de {len(df_historial)} Rutas Guardadas")
         
-        # Muestra el DF, usando los nombres amigables de Sheets
+        # Muestra el DF, usando los nombres amigables
         st.dataframe(df_historial, 
                      use_container_width=True,
                      column_config={
@@ -265,11 +266,12 @@ elif page == "Historial":
                          "km_b": st.column_config.NumberColumn("KM Camión B", format="%.2f km"),
                          "lotes_a": "Lotes Camión A",
                          "lotes_b": "Lotes Camión B",
-                         "fecha": "Fecha"
+                         "fecha": "Fecha",
+                         "lotes_ingresados": "Lotes Ingresados"
                      })
         
         st.divider()
-        st.warning("La funcionalidad de borrar historial no está disponible para Google Sheets sin credenciales avanzadas.")
+        st.warning("El botón a continuación solo borra el historial de esta sesión, no de Google Sheets.")
             
 
     else:
@@ -307,4 +309,3 @@ elif page == "Estadísticas":
 
     else:
         st.info("No hay datos en el historial para generar estadísticas.")
-
