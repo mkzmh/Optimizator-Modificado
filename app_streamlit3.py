@@ -7,7 +7,7 @@ import gspread # Librería principal para Google Sheets
 import json
 
 # Importa la lógica y constantes del módulo vecino
-from routing_logic2 import COORDENADAS_LOTES, solve_route_optimization, VEHICLES, COORDENADAS_ORIGEN 
+from routing_logic3 import COORDENADAS_LOTES, solve_route_optimization, VEHICLES, COORDENADAS_ORIGEN 
 
 # =============================================================================
 # CONFIGURACIÓN INICIAL Y SECRETS (Para Despliegue en la Nube)
@@ -307,3 +307,4 @@ elif page == "Estadísticas":
 
     else:
         st.info("No hay datos en el historial para generar estadísticas.")
+
